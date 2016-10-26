@@ -1,6 +1,7 @@
-This repository contains Openstack drivers for Amazon EC2.
-These drivers provide the capability to spin up Openstack instances, images, volumes and networks on Amazon EC2.
-Following Openstack projects are supported
+OpenStack-Omni aims to provide a standard OpenStack API for managing hybrid and multi-cloud environments.
+This repository contains Openstack drivers for various public cloud environments.
+These drivers currently provide the capability to spin up Openstack instances, images, volumes and networks on Amazon EC2. We need contributions to support other public cloud environments like Azure, Google Compute Engine, Rackspace, etc.
+Following Openstack projects are supported --
 * Nova
 * Neutron
 * Cinder
