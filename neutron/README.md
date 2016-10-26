@@ -98,5 +98,9 @@
 ###### Limitations
 
 1. Adding an Interface with a subnet of another network will not work as an IG can be associated with a single VPC.
-2. Adding an Interface with a subnet of same network will not work because Internet Gateway gets associated with VPC and not Subnets. 
+2. Adding an Interface with a subnet of same network will not work because Internet Gateway gets associated with VPC and not Subnets.
+
+**Security Groups**
+
+Secruity groups will be implemented in the future. Currently for a tenant network created (Amazon VPC), the user will need to log into the AWS portal and assign the secruity group for the VPC. This needs to be done to allow an instance on the network  to talk to the outside world.
 
