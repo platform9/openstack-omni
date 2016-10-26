@@ -7,6 +7,9 @@ Following Openstack projects are supported --
 * Cinder
 * Glance
 
+Check out this video at Openstack Barcelona 2016 Keynote to find out more:
+[![Omni Demo @Keynote](http://i.imgur.com/IDqYoQ3.jpg)](https://www.youtube.com/watch?v=U_LA7ZwQ9og)
+
 ## Setup
 The setup instructions are project specific. Check the project directories for specifics.
 
