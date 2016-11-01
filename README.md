@@ -17,4 +17,12 @@ The setup instructions are project specific. Check the project directories for s
 Development is active. Can be used for individual testing.
 
 ## Contributions
-TODO
+Contributions are welcome. Specifically following areas need help:
+
+1. Similar drivers for Windows Azure, Google Compute Engine and other public cloud providers
+2. Following blueprints track the integration with OpenStack:
+   * Nova: https://blueprints.launchpad.net/nova/+spec/nova-aws
+   * Neutron: https://bugs.launchpad.net/neutron/+bug/1638399
+   * Glance: https://blueprints.launchpad.net/glance/+spec/glance-aws
+   * Cinder: https://blueprints.launchpad.net/cinder/+spec/cinder-aws
+   Help is needed in promoting these blueprints for next (O) release.
