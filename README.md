@@ -25,4 +25,5 @@ Contributions are welcome. Specifically following areas need help:
    * Neutron: https://bugs.launchpad.net/neutron/+bug/1638399
    * Glance: https://blueprints.launchpad.net/glance/+spec/glance-aws
    * Cinder: https://blueprints.launchpad.net/cinder/+spec/cinder-aws
+   
    Help is needed in promoting these blueprints for next (O) release.
