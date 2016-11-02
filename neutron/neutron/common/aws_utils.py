@@ -69,13 +69,10 @@ class AwsUtils:
         self.__ec2_resource = None
         self._nova_client = None
         self._neutron_credentials = {
-            'secret_key': cfg.CONF.AWS.secret_key,
-            'access_key': cfg.CONF.AWS.access_key,
-            'region_name': cfg.CONF.AWS.region_name,
-            'az': cfg.CONF.AWS.az,
-            'wait_time_min': cfg.CONF.AWS.wait_time_min
+            'aws_secret_access_key': cfg.CONF.AWS.secret_key,
+            'aws_access_key_id': cfg.CONF.AWS.access_key,
+            'region_name': cfg.CONF.AWS.region_name
         }
-
 
     def get_nova_client(self):
         if self._nova_client is None:
