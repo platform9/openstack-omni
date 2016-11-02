@@ -207,7 +207,17 @@ class EBSDriver(BaseVD):
         self._conn.delete_snapshot(ebs_ss.id)
 
 
+    def copy_image_to_volume(self, context, volume, image_service, image_id):
+        raise NotImplemented()
 
+    def copy_volume_to_image(self, context, volume, image_service, image_meta):
+        raise NotImplemented()
+
+    def migrate_volume(self, context, volume, host):
+        raise NotImplemented()
+
+    def copy_volume_data(self, context, src_vol, dest_vol, remote=None):
+        raise NotImplemented()
 
 
 
