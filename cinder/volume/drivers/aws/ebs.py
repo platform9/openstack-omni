@@ -116,7 +116,8 @@ class EBSDriver(BaseVD):
         self._conn.create_tags([ebs_vol.id], {'project_id': volume['project_id'],
                                               'uuid': volume['id'],
                                               'is_clone': False,
-                                              'created_at': volume['created_at']})
+                                              'created_at': volume['created_at'],
+                                              'Name': volume['display_name']})
 
     def _find(self, obj_id, find_func):
         ebs_objs = find_func(filters={'tag:uuid': obj_id})
@@ -196,7 +197,8 @@ class EBSDriver(BaseVD):
         self._conn.create_tags([ebs_snap.id], {'project_id': snapshot['project_id'],
                                                'uuid': snapshot['id'],
                                                'is_clone': True,
-                                               'created_at': snapshot['created_at']})
+                                               'created_at': snapshot['created_at'],
+                                               'Name': snapshot['display_name']})
 
     def delete_snapshot(self, snapshot):
         try:
@@ -206,6 +208,21 @@ class EBSDriver(BaseVD):
             return
         self._conn.delete_snapshot(ebs_ss.id)
 
+    def create_volume_from_snapshot(self, volume, snapshot):
+        try:
+            ebs_ss = self._find(snapshot['id'], self._conn.get_all_snapshots)
+        except NotFound:
+            LOG.error(_LE('Snapshot %s was not found'), snapshot['id'])
+            raise
+        ebs_vol = ebs_ss.create_volume(self._zone)
+
+        if self._wait_for_create(ebs_vol.id, 'available') is False:
+            raise APITimeout(service='EC2')
+        self._conn.create_tags([ebs_vol.id], {'project_id': volume['project_id'],
+                                              'uuid': volume['id'],
+                                              'is_clone': False,
+                                              'created_at': volume['created_at'],
+                                              'Name': volume['display_name']})
 
     def copy_image_to_volume(self, context, volume, image_service, image_id):
         raise NotImplemented()

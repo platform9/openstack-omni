@@ -19,6 +19,8 @@ from cinder.exception import APITimeout, NotFound, VolumeNotFound
 from cinder.volume.drivers.aws import ebs
 from moto import mock_ec2
 
+import boto
+
 class EBSVolumeTestCase(test.TestCase):
 
     @mock_ec2
@@ -56,7 +58,7 @@ class EBSVolumeTestCase(test.TestCase):
         ss['project_id'] = kwargs.get('project_id', 'aws_proj_700')
         ss['created_at'] = kwargs.get('create_at', created_at)
         ss['volume'] = kwargs.get('volume', self._stub_volume())
-
+        ss['display_name'] = kwargs.get('display_name', 'snapshot_007')
         return ss
 
     @mock_ec2
@@ -115,3 +117,16 @@ class EBSVolumeTestCase(test.TestCase):
         ss = self._stub_snapshot()
         self._driver.create_volume(ss['volume'])
         self.assertRaises(APITimeout, self._driver.create_snapshot, ss)
+
+    @mock_ec2
+    def test_volume_from_snapshot(self):
+        snapshot = self._stub_snapshot()
+        volume = self._stub_volume()
+        self._driver.create_volume(volume)
+        self._driver.create_snapshot(snapshot)
+        self.assertIsNone(self._driver.create_volume_from_snapshot(volume, snapshot))
+
+    @mock_ec2
+    def test_volume_from_non_existing_snapshot(self):
+        self.assertRaises(NotFound, self._driver.create_volume_from_snapshot,
+                          self._stub_volume(), self._stub_snapshot())
