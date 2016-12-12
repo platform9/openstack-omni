@@ -1,0 +1,5 @@
+12th December 2016:
+    a. Adds unit tests
+    b. Adds additional configurable settings for configuring maximum resources available to nova
+    c. Better security group integration with latest changes in neutron drivers
+
