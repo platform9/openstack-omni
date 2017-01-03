@@ -24,9 +24,10 @@ from neutron.plugins.common import constants
 from neutron.quota import resource_registry
 from neutron.services import service_base
 from oslo_log import log as logging
-from neutron.common.aws_utils import AwsUtils
 from neutron.common import exceptions
 from neutron.db import securitygroups_db
+
+from neutron.common.aws_utils import AwsUtils
 
 LOG = logging.getLogger(__name__)
 
@@ -82,13 +83,22 @@ class AwsRouterPlugin(service_base.ServicePluginBase,
                 port_id = floatingip['floatingip']['port_id']
                 self._associate_floatingip_to_port(context, public_ip_allocated, port_id)
         except Exception as e:
-            LOG.error("Error in Allocating EIP: %s " % e)
+            LOG.error("Error in Creation/Allocating EIP")
+            if public_ip_allocated:
+                LOG.error("Deleting Elastic IP: %s" % public_ip_allocated)
+                self.aws_utils.delete_elastic_ip(public_ip_allocated)
             raise e
 
-        return super(AwsRouterPlugin, self).create_floatingip(
-            context, floatingip,
-            initial_status=n_const.FLOATINGIP_STATUS_DOWN)
-    
+        try:
+            res = super(AwsRouterPlugin, self).create_floatingip(
+                context, floatingip,
+                initial_status=n_const.FLOATINGIP_STATUS_DOWN)
+        except Exception as e:
+            LOG.error("Error when adding floating ip in openstack. Deleting Elastic IP: %s" % public_ip_allocated)
+            self.aws_utils.delete_elastic_ip(public_ip_allocated)
+            raise e
+        return res
+
     def _associate_floatingip_to_port(self, context, floating_ip_address, port_id):
         port = self._core_plugin.get_port(context, port_id)
         ec2_id = None
@@ -123,15 +133,30 @@ class AwsRouterPlugin(service_base.ServicePluginBase,
                 self._associate_floatingip_to_port(context,
                     floating_ip_dict['floating_ip_address'], port_id)
             else:
-                # Port Disassociate
-                self.aws_utils.disassociate_elastic_ip_from_ec2_instance(floating_ip_dict['floating_ip_address'])
+                try:
+                    # Port Disassociate
+                    self.aws_utils.disassociate_elastic_ip_from_ec2_instance(floating_ip_dict['floating_ip_address'])
+                except exceptions.AwsException as e:
+                    if 'Association ID not found' in e.msg:
+                        # Since its already disassociated on EC2, we continue and remove the association here.
+                        LOG.warn("Association for Elastic IP not found. Probable out of band change on EC2.")
+                    elif 'InvalidAddress.NotFound' in e.msg:
+                        LOG.warn("Elastic IP cannot be found in EC2. Probably removed out of band on EC2.")
+                    else:
+                        raise e
         return super(AwsRouterPlugin, self).update_floatingip(context, id, floatingip)
 
     def delete_floatingip(self, context, id):
         floating_ip = super(AwsRouterPlugin, self).get_floatingip(context, id)
         floating_ip_address = floating_ip['floating_ip_address']
         LOG.info("Deleting elastic IP %s" % floating_ip_address)
-        self.aws_utils.delete_elastic_ip(floating_ip_address)
+        try:
+            self.aws_utils.delete_elastic_ip(floating_ip_address)
+        except exceptions.AwsException as e:
+            if 'InvalidAddress.NotFound' in e.msg:
+                LOG.warn("Elastic IP not found on AWS. Cleaning up neutron db")
+            else:
+                raise e
         return super(AwsRouterPlugin, self).delete_floatingip(context, id)
 
     ##### ROUTERS #####
@@ -211,6 +236,10 @@ class AwsRouterPlugin(service_base.ServicePluginBase,
         return super(AwsRouterPlugin, self).add_router_interface(context, router_id, interface_info)
 
     def remove_router_interface(self, context, router_id, interface_info):
-        LOG.info("Deleting subnet %s from router %s" % (interface_info['subnet_id'], router_id))
-        # TODO: Need to delete the route entry in the Route Table of AWS
+        LOG.info("Deleting port %s from router %s" % (interface_info['port_id'], router_id))
+        self.aws_utils.detach_internet_gateway_by_router_id(router_id)
+        route_tables = self.aws_utils.get_route_table_by_router_id(router_id)
+        if route_tables:
+            route_table_id = route_tables[0]['RouteTableId']
+            self.aws_utils.delete_default_route_to_ig(route_table_id)
         return super(AwsRouterPlugin, self).remove_router_interface(context, router_id, interface_info)
