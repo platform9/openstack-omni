@@ -13,12 +13,14 @@
 #    under the License.
 
 from ConfigParser import ConfigParser
-import boto3
-from novaclient.v2 import client as novaclient
-from oslo_log import log as logging
 from neutron.common import exceptions
-import botocore
+from novaclient.v2 import client as novaclient
 from oslo_config import cfg
+from oslo_log import log as logging
+from oslo_service import loopingcall
+import boto3
+import botocore
+import time
 
 aws_group = cfg.OptGroup(name='AWS', title='Options to connect to an AWS environment')
 aws_opts = [
@@ -46,10 +48,14 @@ def _process_exception(e, dry_run):
             error_message = e.response['Error']['Message']
             raise exceptions.AwsException(error_code=error_code,
                 message=error_message)
+        elif isinstance(e, exceptions.AwsException):
+            # If the exception is already an AwsException, do not nest it.
+            # Instead just propagate it up.
+            raise e
         else:
             # TODO: This might display all Exceptions to the user which
             # might be irrelevant, keeping it until it becomes stable
-            error_message = e.message
+            error_message = e.msg
             raise exceptions.AwsException(error_code="NeutronError",
                 message=error_message)
 
@@ -73,6 +79,7 @@ class AwsUtils:
             'aws_access_key_id': cfg.CONF.AWS.access_key,
             'region_name': cfg.CONF.AWS.region_name
         }
+        self._wait_time_sec = 60 * cfg.CONF.AWS.wait_time_min
 
     def get_nova_client(self):
         if self._nova_client is None:
@@ -237,6 +244,10 @@ class AwsUtils:
             DryRun=dry_run,
             CidrBlock=cidr)['Vpc']['VpcId']
         vpc = self._get_ec2_resource().Vpc(vpc_id)
+        waiter = self._get_ec2_client().get_waiter('vpc_available')
+        waiter.wait(
+            DryRun=dry_run,
+            VpcIds = [ vpc_id ])
         vpc.create_tags(Tags=tags_list)
         return vpc_id
 
@@ -258,8 +269,13 @@ class AwsUtils:
     def create_subnet_and_tags(self, vpc_id, cidr, tags_list, dry_run=False):
         vpc = self._get_ec2_resource().Vpc(vpc_id)
         subnet = vpc.create_subnet(
+            AvailabilityZone=cfg.CONF.AWS.az,
             DryRun=dry_run,
             CidrBlock=cidr)
+        waiter = self._get_ec2_client().get_waiter('subnet_available')
+        waiter.wait(
+            DryRun=dry_run,
+            SubnetIds = [ subnet.id ])
         subnet.create_tags(Tags=tags_list)
 
     @aws_exception
@@ -332,3 +348,185 @@ class AwsUtils:
             LOG.warning("Ignoring failure in creating default route to IG: %s" % e)
             if not ignore_errors:
                 _process_exception(e, dry_run)
+
+    # Has ignore_errors special case so can't use decorator
+    def delete_default_route_to_ig(self, route_table_id, dry_run=False, ignore_errors=False):
+        try:
+            self._get_ec2_client().delete_route(
+                DryRun=dry_run,
+                RouteTableId=route_table_id,
+                DestinationCidrBlock='0.0.0.0/0'
+            )
+        except Exception as e:
+            if not ignore_errors:
+                _process_exception(e, dry_run)
+            else:
+                LOG.warning("Ignoring failure in deleting default route to IG: %s" % e)
+
+    # Security group
+    def _create_sec_grp_tags(self, secgrp, tags):
+        def _wait_for_state(start_time):
+            current_time = time.time()
+            if current_time - start_time > self._wait_time_sec:
+                raise loopingcall.LoopingCallDone(False)
+            try:
+                secgrp.reload()
+                secgrp.create_tags(Tags=tags)
+            except Exception as ex:
+                LOG.exception('Exception when adding tags to security groups.'
+                              ' Retrying.')
+                return
+            raise loopingcall.LoopingCallDone(True)
+        timer = loopingcall.FixedIntervalLoopingCall(_wait_for_state, time.time())
+        return timer.start(interval=5).wait()
+
+    def _convert_openstack_rules_to_vpc(self, rules):
+        ingress_rules = []
+        egress_rules = []
+        for rule in rules:
+            rule_dict = {}
+            if rule['protocol'] is None:
+                rule_dict['IpProtocol'] = '-1'
+                rule_dict['FromPort'] = -1
+                rule_dict['ToPort'] = -1
+            elif rule['protocol'].lower() == 'icmp':
+                rule_dict['IpProtocol'] = '1'
+                rule_dict['ToPort'] = '-1'
+                # AWS allows only 1 type of ICMP traffic in 1 rule
+                # we choose the smaller of the port_min and port_max values
+                icmp_rule = rule.get('port_range_min', '-1')
+                if not icmp_rule:
+                    # allow all ICMP traffic rule
+                    icmp_rule = '-1'
+                rule_dict['FromPort'] = icmp_rule
+            else:
+                rule_dict['IpProtocol'] = rule['protocol']
+                if rule['port_range_min'] is None:
+                    rule_dict['FromPort'] = 0
+                else:
+                    rule_dict['FromPort'] = rule['port_range_min']
+                if rule['port_range_max'] is None:
+                    rule_dict['ToPort'] = 65535
+                else:
+                    rule_dict['ToPort'] = rule['port_range_max']
+            rule_dict['IpRanges'] = []
+            if rule['remote_group_id'] is not None:
+                rule_dict['IpRanges'].append({
+                    'CidrIp': rule['remote_group_id']
+                })
+            elif rule['remote_ip_prefix'] is not None:
+                rule_dict['IpRanges'].append({
+                    'CidrIp': rule['remote_ip_prefix']
+                })
+            else:
+                if rule['direction'] == 'egress':
+                    # OpenStack does not populate allow all egress rule
+                    # with remote_group_id or remote_ip_prefix keys.
+                    rule_dict['IpRanges'].append({
+                        'CidrIp': '0.0.0.0/0'
+                    })
+            if rule['direction'] == 'egress':
+                egress_rules.append(rule_dict)
+            else:
+                ingress_rules.append(rule_dict)
+        return ingress_rules, egress_rules
+
+    def _refresh_sec_grp_rules(self, secgrp, ingress, egress):
+        old_ingress = secgrp.ip_permissions
+        old_egress = secgrp.ip_permissions_egress
+        if old_ingress:
+            secgrp.revoke_ingress(IpPermissions=old_ingress)
+        if old_egress:
+            secgrp.revoke_egress(IpPermissions=old_egress)
+        secgrp.authorize_ingress(IpPermissions=ingress)
+        secgrp.authorize_egress(IpPermissions=egress)
+
+    def _create_sec_grp_rules(self, secgrp, rules):
+        ingress, egress = self._convert_openstack_rules_to_vpc(rules)
+        def _wait_for_state(start_time):
+            current_time = time.time()
+
+            if current_time - start_time > self._wait_time_sec:
+                raise loopingcall.LoopingCallDone(False)
+            try:
+                self._refresh_sec_grp_rules(secgrp, ingress, egress)
+            except Exception as ex:
+                LOG.exception('Error creating security group rules. Retrying.')
+                return
+            raise loopingcall.LoopingCallDone(True)
+        timer = loopingcall.FixedIntervalLoopingCall(_wait_for_state,
+                                                     time.time())
+        return timer.start(interval=5).wait()
+
+    def create_security_group_rules(self, ec2_secgrp, rules):
+        if self._create_sec_grp_rules(ec2_secgrp, rules) is False:
+            exceptions.AwsException(
+                    message='Timed out creating security groups',
+                    error_code='Time Out')
+
+    def create_security_group(self, name, description, vpc_id, os_secgrp_id,
+                              tags):
+        if not description:
+            description = 'Created by Platform9 OpenStack'
+        secgrp = self._get_ec2_resource().create_security_group(
+                GroupName=name, Description=description, VpcId=vpc_id)
+        if self._create_sec_grp_tags(secgrp, tags) is False:
+            delete_sec_grp(secgrp.id)
+            raise exceptions.AwsException(
+                    message='Timed out creating tags on security group',
+                    error_code='Time Out')
+        return secgrp
+
+    @aws_exception
+    def get_sec_group_by_id(self, secgrp_id, vpc_id = None, dry_run=False):
+        filters = [{
+                    'Name': 'tag-value',
+                    'Values': [secgrp_id]
+                    }]
+        if vpc_id:
+            filters.append({
+                'Name': 'vpc-id',
+                'Values': [vpc_id]
+            })
+
+        response = self._get_ec2_client().describe_security_groups(
+            DryRun=dry_run, Filters=filters)
+        if 'SecurityGroups' in response:
+            return response['SecurityGroups']
+        return []
+
+    @aws_exception
+    def delete_security_group(self, openstack_id):
+        aws_secgroups = self.get_sec_group_by_id(openstack_id)
+        for secgrp in aws_secgroups:
+            group_id = secgrp['GroupId']
+            self.delete_security_group_by_id(group_id)
+
+    @aws_exception
+    def delete_security_group_by_id(self, group_id):
+        ec2client = self._get_ec2_client()
+        ec2client.delete_security_group(GroupId=group_id)
+
+    @aws_exception
+    def _update_sec_group(self, ec2_id, old_ingress, old_egress, new_ingress,
+                          new_egress):
+        sg = self._get_ec2_resource().SecurityGroup(ec2_id)
+        sg.revoke_ingress(IpPermissions=old_ingress)
+        time.sleep(1)
+        sg.revoke_egress(IpPermissions=old_egress)
+        time.sleep(1)
+        sg.authorize_ingress(IpPermissions=new_ingress)
+        time.sleep(1)
+        sg.authorize_egress(IpPermissions=new_egress)
+
+    @aws_exception
+    def update_sec_group(self, openstack_id, rules):
+        ingress, egress = self._convert_openstack_rules_to_vpc(rules)
+        aws_secgrps = self.get_sec_group_by_id(openstack_id)
+        for aws_secgrp in aws_secgrps:
+            old_ingress = aws_secgrp['IpPermissions']
+            old_egress = aws_secgrp['IpPermissionsEgress']
+            ec2_sg_id = aws_secgrp['GroupId']
+            self._update_sec_group(ec2_sg_id, old_ingress, old_egress, ingress,
+                                   egress)
+
