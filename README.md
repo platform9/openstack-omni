@@ -1,5 +1,7 @@
-** Update **
+# ** Update ** #
+
 Openstack-Omni is now an Openstack Big Tent project. This repository is now depreciated in favor of https://github.com/openstack/omni. Please use the main Openstack repo for future work related to Omni.
+
 
 OpenStack-Omni aims to provide a standard OpenStack API for managing hybrid and multi-cloud environments.
 This repository contains Openstack drivers for various public cloud environments.
